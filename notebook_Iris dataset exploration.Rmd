@@ -1,0 +1,679 @@
+
+---
+title: "notebook-Iris dataset exploration"
+author: "Pierre-Etienne TOULEMONDE"
+date: "11-12-2022"
+output:
+  html_document:
+    toc: TRUE
+    number_sections: TRUE
+---
+
+# Iris dataset presentation
+
+<u>Tags</u>: Data visualization, Supervised machine learning, Unsupervised machine learning 
+
+<u>Principal packages</u>: tidyverse, skimr, patchwork, corrplot, FactoMineR, factoextra, tidymodels, randomForest, ranger, plotly, gtsummary
+
+![](images/iris_image.jpg)
+
+The Iris dataset, also known as Fisher's Iris or Anderson's Iris, is a multivariate dataset introduced in 1936 by Ronald Fisher in his paper The use of multiple measurements in taxonomic problems as an example of the application of linear discriminant analysis<sup>1</sup> . Data were collected by Edgar Anderson to quantify variations in the morphology of iris flowers of three species<sup>1</sup>. Two of the three species were collected in the Gaspé Peninsula. "All are from the same field, picked on the same day and measured on the same day by the same person with the same measuring tools<sup>1</sup>".
+
+The data set includes 50 samples of each of the three iris species (Iris setosa, Iris virginica and Iris versicolor).  Four characteristics were measured from each sample: length and width of sepals and petals, in centimetres. Based on the combination of these four variables, Fisher developed a linear discriminant analysis model to distinguish between the species.
+
+<sup>1</sup><a href="https://fr.wikipedia.org/wiki/Iris_de_Fisher#cite_ref-fisher36_1-0">Iris de Fisher - Wikipédia</a>
+
+The question of this notebook is: Is there an algorithm that can predict the species without error?
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+packages <- c("tidyverse",
+              "skimr",
+              "patchwork",
+              "corrplot",
+              "FactoMineR",
+              "factoextra",
+              "tidymodels",
+              "randomForest", 
+              "ranger",
+              "plotly",
+              "gtsummary")
+installed_packages <- packages %in% rownames(installed.packages())
+if( any( installed_packages == FALSE)) {
+  install.packages(packages[!installed_packages])
+}
+invisible( lapply(packages, library, character.only=TRUE) )
+
+data(iris)
+```
+
+## Univariate Description
+
+### Graphic description
+```{r graphic-description}
+iris %>%
+  select_if(is.numeric) %>%
+  gather() %>%
+  ggplot(aes(x=key, y=value, fill=key)) + 
+    geom_boxplot() +
+  labs(title = "Boxplot of each numeric variables",
+       x = "variables")
+```
+
+### Numeric description
+```{r numeric_description}
+skim(iris)
+iris %>%
+  group_by(Species) %>%
+  skim()
+```
+
+### Table one
+```{r table-one}
+iris %>%
+  tbl_summary(by = Species,
+              type = all_continuous() ~ "continuous2",
+              statistic = all_continuous() ~ c("{median} ({p25}-{p75})", "{mean} ({sd})")) %>%
+  add_overall(last = TRUE) %>%
+  add_stat_label()
+```
+
+## Multivariate description
+### Correlation matrice
+*Important* : Only numeric variables can be used in PCA.
+```{r corrplot}
+corrplot(round(cor(select_if(iris, is.numeric)),2), 
+         type="upper", 
+         order="hclust", 
+         tl.col="black", 
+         tl.srt=45)
+```
+
+### Principal component analysis
+```{r PCA}
+res.pca <- PCA(select_if(iris, is.numeric), graph = FALSE)
+plot(res.pca, choix = "var")
+
+barplot(res.pca$eig[, 2], names.arg=1:nrow(res.pca$eig), 
+       main = "Variances",
+       xlab = "Principal Components",
+       ylab = "Percentage of variances",
+       col ="steelblue")
+# Add connected line segments to the plot
+lines(x = 1:nrow(res.pca$eig), res.pca$eig[, 2], 
+      type="b", pch=19, col = "red")
+
+``` 
+<!-- To go durther : http://www.sthda.com/english/wiki/wiki.php?id_contents=7851 -->
+
+<u>Interpretation</u> : 
+*Sepal.Length*, *Pental.Width* and *Petal.Lenght* are highly correlated variables: knowing one of the three variables gives a fairly good idea of the values of the others.
+
+## Machine learning classification
+### Hierarchical Clustering
+```{r hclust, warning = FALSE}
+res.h <- hclust(dist(iris), method = "complete")
+plot(res.h, hang = -1, cex = 0.6)
+
+# table(iris$Species, 
+#       cutree(res.h, k=3))
+
+res.iris <- tibble(species = iris$Species, 
+                   hclust = cutree(res.h, k=3) ) %>%
+  mutate(hclust = case_when(hclust == 1 ~ "setosa",
+                             hclust == 2 ~ "virginica",
+                             hclust == 3 ~ "versicolor") )
+
+```
+<!--  To go further : http://www.sthda.com/english/articles/28-hierarchical-clustering- -->
+<!--  http://www.sthda.com/english/wiki/beautiful-dendrogram-visualizations-in-r-5-must-known-methods-unsupervised-machine-learning -->
+
+<u>Interpretation</u> : 
+With hclust method, Setosa and virginica are recognised almost all the time. The species versicolor is confused half the time with the species virginica.
+
+### K-Nearest neighboors
+```{r knn}
+iris_split <- initial_split(iris, prop = 0.7)
+iris_train <- iris_split %>% training()
+iris_test <- iris_split %>% testing()
+
+nearest_neighbor_kknn_spec <-
+  nearest_neighbor() %>%
+  set_engine('kknn') %>%
+  set_mode('classification')
+
+knn_mod <- nearest_neighbor_kknn_spec %>%
+  fit(Species ~ ., iris_train) 
+knn_last_fit <- last_fit(nearest_neighbor_kknn_spec, recipe(Species ~ ., data = iris), iris_split)
+
+knn.a <- accuracy(cbind(iris, predict(knn_mod, iris)), Species, .pred_class)$.estimate
+
+res.iris$knn <- predict(knn_mod, iris)$.pred_class
+
+knn.plot <- ggplot(res.iris, aes(x=knn, fill=species)) + 
+  geom_bar() + 
+  labs(title = "Knn model",
+       x="Species from KNN model")
+ggplotly(knn.plot)
+```
+
+### Kmeans
+```{r kmeans}
+fviz_nbclust(select_if(iris, is.numeric), kmeans, method = "wss")
+
+res.km <- kmeans(select_if(iris, is.numeric), centers = 3, nstart = 25)$cluster
+res.km <- as.factor( ifelse(res.km == 1, "virginica", ifelse(res.km == 2, "versicolor", "setosa") ) )
+
+# table(iris$Species, res.km)
+km.a <- accuracy(cbind(iris, res.km), Species, res.km)$.estimate
+
+res.iris$km <- res.km
+
+km.plot <- ggplot(res.iris, aes(x=km, fill=species)) + 
+  geom_bar() + 
+  labs(title = "Kmeans model",
+       x="Species from kmeans model")
+ggplotly(km.plot)
+
+```
+<!-- Note : https://www.datanovia.com/en/fr/blog/visualisation-du-clustering-k-means-dans-r-guide-etape-par-etape/ -->
+
+### Xgboost
+```{r xgboost}
+xgboost_parnsnip <-
+  boost_tree() %>%
+  set_engine('xgboost') %>%
+  set_mode('classification')
+
+res.xgboost <- xgboost_parnsnip %>%
+  fit(Species ~ ., data = iris) %>%
+  predict(iris) %>% 
+  pull(.pred_class)
+
+xgboost.a <- accuracy(cbind(iris, res.xgboost), Species, res.xgboost)$.estimate
+res.iris$xgboost <- res.xgboost
+
+xgboost.plot <- ggplot(res.iris, aes(x=xgboost, fill=species)) + 
+  geom_bar() + 
+  labs(title = "Xgboost model",
+       x="Species from Xgboost model")
+ggplotly(xgboost.plot)
+
+```
+
+### Ranger
+```{r ranger}
+ranger_parnsnip <-
+  rand_forest() %>%
+  set_engine('ranger') %>%
+  set_mode('classification')
+
+res.ranger <- ranger_parnsnip %>%
+  fit(Species ~ ., data = iris) %>%
+  predict(iris) %>% 
+  pull(.pred_class)
+
+ranger.a <- accuracy(cbind(iris, res.ranger), Species, res.ranger)$.estimate
+res.iris$ranger <- res.ranger
+
+ranger.plot <- ggplot(res.iris, aes(x=ranger, fill=species)) + 
+  geom_bar() + 
+  labs(title = "Ranger model",
+       x="Species from Ranger model")
+ggplotly(ranger.plot)
+```
+
+### Comparaison models
+The objective right now is to compare the 4 models. 2 methods : graphically, and with accuracy of each model.
+```{r comparison_model}
+(knn.plot + km.plot)/ (xgboost.plot + ranger.plot)
+```
+
+The accuracy table :
+```{r comparison_table}
+data.frame(model = c("knn", "kmeans", "xgboost", "ranger"),
+           accuracy = c(knn.a, km.a, xgboost.a, ranger.a))
+```
+
+Analyse results with PCA :
+```{r PCA_results, warning = FALSE}
+res.pca.res <- PCA(res.iris %>%
+  mutate(species = case_when(species == "setosa" ~ 1,
+                             species == "virginica" ~ 2,
+                             species == "versicola" ~ 3),
+         hclust = case_when(hclust == "setosa" ~ 1,
+                             hclust == "virginica" ~ 2,
+                             hclust == "versicola" ~ 3),
+         knn = case_when(knn == "setosa" ~ 1,
+                             knn == "virginica" ~ 2,
+                             knn == "versicola" ~ 3),
+         km = case_when(km == "setosa" ~ 1,
+                             km == "virginica" ~ 2,
+                             km == "versicola" ~ 3),
+         xgboost = case_when(xgboost == "setosa" ~ 1,
+                             xgboost == "virginica" ~ 2,
+                             xgboost == "versicola" ~ 3),
+         ranger = case_when(ranger == "setosa" ~ 1,
+                             ranger == "virginica" ~ 2,
+                             ranger == "versicola" ~ 3)), graph = FALSE)
+
+plot(res.pca.res, choix = "var")
+```
+
+## With dimension reduction
+```{r iris_pca, warning = FALSE}
+iris_pca <- PCA(iris %>% select(-Species), 
+                ncp = 3, 
+                graph = FALSE)$ind$coord %>%
+  as_tibble() %>%
+  mutate(Species =  case_when(iris$Species == "setosa" ~ 1,
+                              iris$Species == "virginica" ~ 2,
+                              iris$Species == "versicolor" ~ 3),
+         Species = as_factor(Species))
+
+```
+
+### Hierarchical Clustering
+```{r hclust_pca, warning = FALSE}
+res.h <- hclust(dist(iris_pca), method = "complete")
+plot(res.h, hang = -1, cex = 0.6)
+
+# table(iris$Species,
+#       cutree(res.h, k=3))
+
+res.iris <- tibble(species = iris$Species, 
+                   hclust = cutree(res.h, k=3) ) %>%
+  mutate(hclust = case_when(hclust == 1 ~ "setosa",
+                             hclust == 2 ~ "virginica",
+                             hclust == 3 ~ "versicolor") )
+
+```
+
+### K-Nearest neighboors
+```{r knn_pca}
+iris_pca_split <- initial_split(iris_pca, prop = 0.7)
+iris_pca_train <- iris_pca_split %>% training()
+iris_pca_test <- iris_pca_split %>% testing()
+
+nearest_neighbor_kknn_spec <-
+  nearest_neighbor() %>%
+  set_engine('kknn') %>%
+  set_mode('classification')
+
+knn_mod <- nearest_neighbor_kknn_spec %>%
+  fit(Species ~ ., iris_pca_train) 
+knn_last_fit <- last_fit(nearest_neighbor_kknn_spec, recipe(Species ~ ., data = iris_pca), iris_pca_split)
+
+knn.a.pca <- accuracy(cbind(iris_pca, predict(knn_mod, iris_pca)), Species, .pred_class)$.estimate
+
+res.iris$knn <- predict(knn_mod, iris_pca)$.pred_class
+
+knn.plot.pca <- ggplot(res.iris, aes(x=knn, fill=species)) + 
+  geom_bar() + 
+  labs(title = "Knn model",
+       x="Species from KNN model")
+ggplotly(knn.plot.pca)
+```
+
+### Kmeans
+```{r kmeans_pca}
+fviz_nbclust(select_if(iris_pca, is.numeric), kmeans, method = "wss")
+
+res.km <- kmeans(select_if(iris_pca, is.numeric), centers = 3, nstart = 25)$cluster
+res.km <- as.factor( ifelse(res.km == 1, "virginica", ifelse(res.km == 2, "versicolor", "setosa") ) )
+
+# table(iris$Species, res.km)
+km.a.pca <- accuracy(cbind(iris, res.km), Species, res.km)$.estimate
+
+res.iris$km <- res.km
+
+km.plot.pca <- ggplot(res.iris, aes(x=km, fill=species)) + 
+  geom_bar() + 
+  labs(title = "Kmeans model",
+       x="Species from kmeans model")
+ggplotly(km.plot.pca)
+
+```
+
+### Xgboost
+```{r xgboost_pca}
+xgboost_parnsnip <-
+  boost_tree() %>%
+  set_engine('xgboost') %>%
+  set_mode('classification')
+
+res.xgboost <- xgboost_parnsnip %>%
+  fit(Species ~ ., data = iris_pca) %>%
+  predict(iris_pca) %>% 
+  pull(.pred_class)
+
+xgboost.a.pca <- accuracy(cbind(iris_pca, res.xgboost), Species, res.xgboost)$.estimate
+res.iris$xgboost <- res.xgboost
+
+xgboost.plot.pca <- ggplot(res.iris, aes(x=xgboost, fill=species)) + 
+  geom_bar() + 
+  labs(title = "Xgboost model",
+       x="Species from Xgboost model")
+ggplotly(xgboost.plot.pca)
+
+```
+
+### Ranger
+```{r ranger_pca}
+ranger_parnsnip <-
+  rand_forest() %>%
+  set_engine('ranger') %>%
+  set_mode('classification')
+
+res.ranger <- ranger_parnsnip %>%
+  fit(Species ~ ., data = iris_pca) %>%
+  predict(iris_pca) %>% 
+  pull(.pred_class)
+
+ranger.a.pca <- accuracy(cbind(iris_pca, res.ranger), Species, res.ranger)$.estimate
+res.iris$ranger <- res.ranger
+
+ranger.plot.pca <- ggplot(res.iris, aes(x=ranger, fill=species)) + 
+  geom_bar() + 
+  labs(title = "Ranger model",
+       x="Species from Ranger model")
+ggplotly(ranger.plot.pca)
+```
+
+### Comparaison models
+The objective right now is to compare the 4 models. 2 methods : graphically, and with accuracy of each model.
+```{r comparison_model_pca}
+(knn.plot.pca + km.plot.pca)/ (xgboost.plot.pca + ranger.plot.pca)
+```
+
+The accuracy table :
+```{r comparison_table_pca}
+data.frame(model = c("knn", "kmeans", "xgboost", "ranger"),
+           accuracy = c(knn.a, km.a, xgboost.a, ranger.a),
+           accuracy_PCA = c(knn.a.pca, km.a.pca, xgboost.a.pca, ranger.a.pca))
+```
+
+## With scaling
+```{r iris_scaled, warning = FALSE}
+iris_scaled <- scale(iris %>% select(-Species), center = FALSE, scale = TRUE) %>%
+  as_tibble() %>%
+  mutate(Species = iris$Species, 
+         Species =  case_when(iris$Species == "setosa" ~ 1,
+                              iris$Species == "virginica" ~ 2,
+                              iris$Species == "versicolor" ~ 3),
+         Species = as_factor(Species))
+
+```
+
+### Hierarchical Clustering
+```{r hclust_scaled, warning = FALSE}
+res.h <- hclust(dist(iris_scaled), method = "complete")
+plot(res.h, hang = -1, cex = 0.6)
+
+# table(iris$Species,
+#       cutree(res.h, k=3))
+
+res.iris <- tibble(species = iris$Species, 
+                   hclust = cutree(res.h, k=3) ) %>%
+  mutate(hclust = case_when(hclust == 1 ~ "setosa",
+                             hclust == 2 ~ "virginica",
+                             hclust == 3 ~ "versicolor") )
+
+```
+
+### K-Nearest neighboors
+```{r knn_scaled}
+iris_scaled_split <- initial_split(iris_scaled, prop = 0.7)
+iris_scaled_train <- iris_scaled_split %>% training()
+iris_scaled_test <- iris_scaled_split %>% testing()
+
+nearest_neighbor_kknn_spec <-
+  nearest_neighbor() %>%
+  set_engine('kknn') %>%
+  set_mode('classification')
+
+knn_mod <- nearest_neighbor_kknn_spec %>%
+  fit(Species ~ ., iris_scaled_train) 
+knn_last_fit <- last_fit(nearest_neighbor_kknn_spec, recipe(Species ~ ., data = iris_scaled), iris_scaled_split)
+
+knn.a.scaled <- accuracy(cbind(iris_scaled, predict(knn_mod, iris_scaled)), Species, .pred_class)$.estimate
+
+res.iris$knn <- predict(knn_mod, iris_scaled)$.pred_class
+
+knn.plot.scaled <- ggplot(res.iris, aes(x=knn, fill=species)) + 
+  geom_bar() + 
+  labs(title = "Knn model",
+       x="Species from KNN model")
+ggplotly(knn.plot.scaled)
+```
+
+### Kmeans
+```{r kmeans_scaled}
+fviz_nbclust(select_if(iris_scaled, is.numeric), kmeans, method = "wss")
+
+res.km <- kmeans(select_if(iris_scaled, is.numeric), centers = 3, nstart = 25)$cluster
+res.km <- as.factor( ifelse(res.km == 1, "virginica", ifelse(res.km == 2, "versicolor", "setosa") ) )
+
+# table(iris$Species, res.km)
+km.a.scaled <- accuracy(cbind(iris, res.km), Species, res.km)$.estimate
+
+res.iris$km <- res.km
+
+km.plot.scaled <- ggplot(res.iris, aes(x=km, fill=species)) + 
+  geom_bar() + 
+  labs(title = "Kmeans model",
+       x="Species from kmeans model")
+ggplotly(km.plot.scaled)
+
+```
+
+### Xgboost
+```{r xgboost_scaled}
+xgboost_parnsnip <-
+  boost_tree() %>%
+  set_engine('xgboost') %>%
+  set_mode('classification')
+
+res.xgboost <- xgboost_parnsnip %>%
+  fit(Species ~ ., data = iris_scaled) %>%
+  predict(iris_scaled) %>% 
+  pull(.pred_class)
+
+xgboost.a.scaled <- accuracy(cbind(iris_scaled, res.xgboost), Species, res.xgboost)$.estimate
+res.iris$xgboost <- res.xgboost
+
+xgboost.plot.scaled <- ggplot(res.iris, aes(x=xgboost, fill=species)) + 
+  geom_bar() + 
+  labs(title = "Xgboost model",
+       x="Species from Xgboost model")
+ggplotly(xgboost.plot.scaled)
+
+```
+
+### Ranger
+```{r ranger_scaled}
+ranger_parnsnip <-
+  rand_forest() %>%
+  set_engine('ranger') %>%
+  set_mode('classification')
+
+res.ranger <- ranger_parnsnip %>%
+  fit(Species ~ ., data = iris_scaled) %>%
+  predict(iris_scaled) %>% 
+  pull(.pred_class)
+
+ranger.a.scaled <- accuracy(cbind(iris_scaled, res.ranger), Species, res.ranger)$.estimate
+res.iris$ranger <- res.ranger
+
+ranger.plot.scaled <- ggplot(res.iris, aes(x=ranger, fill=species)) + 
+  geom_bar() + 
+  labs(title = "Ranger model",
+       x="Species from Ranger model")
+ggplotly(ranger.plot.scaled)
+```
+
+### Comparaison models
+The objective right now is to compare the 4 models. 2 methods : graphically, and with accuracy of each model.
+
+Four graphs on the top : models without PCA, four models int he bottom : with PCA.
+```{r comparison_model_with_scaled}
+(knn.plot.scaled + km.plot.scaled)/ (xgboost.plot.scaled + ranger.plot.scaled)
+```
+
+The accuracy table :
+```{r comparison_table_scaled}
+data.frame(model = c("knn", "kmeans", "xgboost", "ranger"),
+           accuracy = c(knn.a, km.a, xgboost.a, ranger.a),
+           accuracy_PCA = c(knn.a.pca, km.a.pca, xgboost.a.pca, ranger.a.pca),
+           accuracy_scaled = c(knn.a.scaled, km.a.scaled, xgboost.a.scaled, ranger.a.scaled))
+```
+
+## With scaling and centering
+```{r iris_centered, warning = FALSE}
+iris_centered <- scale(iris %>% select(-Species), center = TRUE, scale = TRUE) %>%
+  as_tibble() %>%
+  mutate(Species = iris$Species, 
+         Species =  case_when(iris$Species == "setosa" ~ 1,
+                              iris$Species == "virginica" ~ 2,
+                              iris$Species == "versicolor" ~ 3),
+         Species = as_factor(Species))
+
+```
+
+### Hierarchical Clustering
+```{r hclust_centered, warning = FALSE}
+res.h <- hclust(dist(iris_centered), method = "complete")
+plot(res.h, hang = -1, cex = 0.6)
+
+# table(iris$Species,
+#       cutree(res.h, k=3))
+
+res.iris <- tibble(species = iris$Species, 
+                   hclust = cutree(res.h, k=3) ) %>%
+  mutate(hclust = case_when(hclust == 1 ~ "setosa",
+                             hclust == 2 ~ "virginica",
+                             hclust == 3 ~ "versicolor") )
+
+```
+
+### K-Nearest neighboors
+```{r knn_centered}
+iris_centered_split <- initial_split(iris_centered, prop = 0.7)
+iris_centered_train <- iris_centered_split %>% training()
+iris_centered_test <- iris_centered_split %>% testing()
+
+nearest_neighbor_kknn_spec <-
+  nearest_neighbor() %>%
+  set_engine('kknn') %>%
+  set_mode('classification')
+
+knn_mod <- nearest_neighbor_kknn_spec %>%
+  fit(Species ~ ., iris_centered_train) 
+knn_last_fit <- last_fit(nearest_neighbor_kknn_spec, recipe(Species ~ ., data = iris_centered), iris_scaled_split)
+
+knn.a.centered <- accuracy(cbind(iris_centered, predict(knn_mod, iris_centered)), Species, .pred_class)$.estimate
+
+res.iris$knn <- predict(knn_mod, iris_centered)$.pred_class
+
+knn.plot.centered <- ggplot(res.iris, aes(x=knn, fill=species)) + 
+  geom_bar() + 
+  labs(title = "Knn model",
+       x="Species from KNN model")
+ggplotly(knn.plot.centered)
+```
+
+### Kmeans
+```{r kmeans_centered}
+fviz_nbclust(select_if(iris_centered, is.numeric), kmeans, method = "wss")
+
+res.km <- kmeans(select_if(iris_centered, is.numeric), centers = 3, nstart = 25)$cluster
+res.km <- as.factor( ifelse(res.km == 1, "virginica", ifelse(res.km == 2, "versicolor", "setosa") ) )
+
+# table(iris$Species, res.km)
+km.a.centered <- accuracy(cbind(iris, res.km), Species, res.km)$.estimate
+
+res.iris$km <- res.km
+
+km.plot.centered <- ggplot(res.iris, aes(x=km, fill=species)) + 
+  geom_bar() + 
+  labs(title = "Kmeans model",
+       x="Species from kmeans model")
+ggplotly(km.plot.centered)
+
+```
+
+### Xgboost
+```{r xgboost_centered}
+xgboost_parnsnip <-
+  boost_tree() %>%
+  set_engine('xgboost') %>%
+  set_mode('classification')
+
+res.xgboost <- xgboost_parnsnip %>%
+  fit(Species ~ ., data = iris_centered) %>%
+  predict(iris_centered) %>% 
+  pull(.pred_class)
+
+xgboost.a.centered <- accuracy(cbind(iris_centered, res.xgboost), Species, res.xgboost)$.estimate
+res.iris$xgboost <- res.xgboost
+
+xgboost.plot.centered <- ggplot(res.iris, aes(x=xgboost, fill=species)) + 
+  geom_bar() + 
+  labs(title = "Xgboost model",
+       x="Species from Xgboost model")
+ggplotly(xgboost.plot.centered)
+
+```
+
+### Ranger
+```{r ranger_centered}
+ranger_parnsnip <-
+  rand_forest() %>%
+  set_engine('ranger') %>%
+  set_mode('classification')
+
+res.ranger <- ranger_parnsnip %>%
+  fit(Species ~ ., data = iris_centered) %>%
+  predict(iris_centered) %>% 
+  pull(.pred_class)
+
+ranger.a.centered <- accuracy(cbind(iris_centered, res.ranger), Species, res.ranger)$.estimate
+res.iris$ranger <- res.ranger
+
+ranger.plot.centered <- ggplot(res.iris, aes(x=ranger, fill=species)) + 
+  geom_bar() + 
+  labs(title = "Ranger model",
+       x="Species from Ranger model")
+ggplotly(ranger.plot.centered)
+```
+
+### Comparaison models
+The objective right now is to compare the 4 models. 2 methods : graphically, and with accuracy of each model.
+
+Four graphs on the top : models without PCA, four models int he bottom : with PCA.
+```{r comparison_model_with_centered}
+(knn.plot.centered + km.plot.centered)/ (xgboost.plot.centered + ranger.plot.centered)
+```
+
+The accuracy table :
+```{r comparison_table_centered}
+data.frame(model = c("knn", "kmeans", "xgboost", "ranger"),
+           accuracy = c(knn.a, km.a, xgboost.a, ranger.a),
+           accuracy_PCA = c(knn.a.pca, km.a.pca, xgboost.a.pca, ranger.a.pca),
+           accuracy_scaled = c(knn.a.scaled, km.a.scaled, xgboost.a.scaled, ranger.a.scaled), 
+           accuracy_centered = c(knn.a.centered, km.a.centered, xgboost.a.centered, ranger.a.centered))
+```
+
+## Conclusion
+For the iris dataset, the best model for predicting the species is the Xgboost model (regardless of the transformations tested). The Kmeans model is a very poor model for predicting species. The *PCA* and *centered* transformations only had an impact on the kmeans model, by reducing its accuracy.
+
+# Session
+
+```{r session_info}
+print( paste0( "System version : ", sessionInfo()$running, ", ", sessionInfo()$platform) )
+print( paste0( R.version$version.string, " - ", R.version$nickname ) )
+
+for (package in c( sessionInfo()$basePkgs, objects(sessionInfo()$otherPkgs) ) ) {
+  print( paste0( package, " : ", package, "_", packageVersion(package) ) ) }
+```
