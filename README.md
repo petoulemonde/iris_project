@@ -1,6 +1,6 @@
-# # Iris dataset exploration
+## Iris dataset exploration
 
-**Short name***: iris
+**Short name**: iris
 
 **Language**: R
 
